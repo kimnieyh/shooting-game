@@ -19,6 +19,20 @@ import {
 type BuffKind = Exclude<ItemKind, "heart">;
 const BUFF_ORDER: BuffKind[] = ["rapidFire", "spread", "shield", "magnet"];
 
+// Audio state management (persists across scene changes)
+const AUDIO_MUTE_KEY = "stella_shooter_muted";
+let isMuted = false;
+
+function loadMuteState(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(AUDIO_MUTE_KEY) === "true";
+}
+
+function saveMuteState(muted: boolean) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(AUDIO_MUTE_KEY, String(muted));
+}
+
 function pickItemKind(): ItemKind {
   const entries = Object.entries(ITEM_TYPES) as [ItemKind, (typeof ITEM_TYPES)[ItemKind]][];
   const total = entries.reduce((sum, [, cfg]) => sum + cfg.weight, 0);
@@ -171,16 +185,69 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
 
   let currentBGM: ReturnType<typeof k.play> | null = null;
 
+  // Load initial mute state
+  isMuted = loadMuteState();
+  // Apply initial global volume based on mute state
+  k.volume(isMuted ? 0 : 1);
+
+  // Helper function to calculate effective volume
+  function getEffectiveVolume(baseVolume: number): number {
+    return isMuted ? 0 : baseVolume;
+  }
+
+  // Helper function to play sound with master volume
+  function playSound(soundName: string, options?: { volume?: number; loop?: boolean; detune?: number }) {
+    return k.play(soundName, {
+      ...options,
+      volume: getEffectiveVolume(options?.volume ?? 0.7),
+    });
+  }
+
+  // Mute toggle button (placed in bottom-right corner)
+  let muteButton: GameObj | null = null;
+
+  function createMuteButton(k: KAPLAYCtx) {
+    if (muteButton) k.destroy(muteButton);
+
+    const muteIcon = isMuted ? "🔇" : "🔊";
+    muteButton = k.add([
+      k.text(muteIcon, { size: 24 }),
+      k.pos(GAME_WIDTH - 32, GAME_HEIGHT - 40),
+      k.anchor("center"),
+      k.fixed(),
+      k.z(100),
+      k.area(),
+    ]);
+
+    muteButton.onClick(() => {
+      isMuted = !isMuted;
+      saveMuteState(isMuted);
+      // Apply global volume immediately to affect running BGM
+      k.volume(isMuted ? 0 : 1);
+      createMuteButton(k);
+    });
+
+    muteButton.onHover(() => {
+      muteButton!.scale = 1.15;
+    });
+
+    muteButton.onHoverEnd(() => {
+      muteButton!.scale = 1;
+    });
+  }
+
   // ---------------- Start scene ----------------
   k.scene("start", () => {
     // Stop any existing BGM and play title BGM
     if (currentBGM) {
       currentBGM.stop();
     }
-    currentBGM = k.play("bgm_title", { loop: true, volume: 0.6 });
+    currentBGM = playSound("bgm_title", { loop: true, volume: 0.6 });
 
     addStarfield(k);
     const best = loadBestScore();
+
+    createMuteButton(k);
 
     k.add([
       k.sprite("ship"),
@@ -234,11 +301,11 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
     });
 
     k.onMousePress(() => {
-      k.play("ui_select", { volume: 0.7 });
+      playSound("ui_select", { volume: 0.7 });
       k.go("game");
     });
     k.onKeyPress(["space", "enter"], () => {
-      k.play("ui_select", { volume: 0.7 });
+      playSound("ui_select", { volume: 0.7 });
       k.go("game");
     });
   });
@@ -249,9 +316,10 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
     if (currentBGM) {
       currentBGM.stop();
     }
-    currentBGM = k.play("bgm_game", { loop: true, volume: 0.5 });
+    currentBGM = playSound("bgm_game", { loop: true, volume: 0.5 });
 
     addStarfield(k);
+    createMuteButton(k);
 
     let score = 0;
     let lives = PLAYER.maxLives;
@@ -367,7 +435,7 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
     });
 
     function endGame() {
-      k.play("game_over", { volume: 0.7 });
+      playSound("game_over", { volume: 0.7 });
       if (currentBGM) {
         currentBGM.stop();
       }
@@ -378,12 +446,12 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
     function damagePlayer() {
       if (invulnTimer > 0) return;
       if (buffs.shield > 0) {
-        k.play("shield_block", { volume: 0.7 });
+        playSound("shield_block", { volume: 0.7 });
         k.shake(3);
         spawnRing(k, player.pos.x, player.pos.y, ITEM_TYPES.shield.color, 20, 260);
         return;
       }
-      k.play("player_damage", { volume: 0.7 });
+      playSound("player_damage", { volume: 0.7 });
       lives -= 1;
       invulnTimer = PLAYER.invulnDuration;
       k.shake(6);
@@ -413,7 +481,9 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
     }
 
     function spawnPlayerBullet() {
-      k.play("player_shoot", { volume: 0.5 });
+      // Add pitch randomization to prevent monotony during rapid fire
+      const detuneAmount = k.rand(-120, 120); // ±120 cents = ±1.2 semitones
+      playSound("player_shoot", { volume: 0.5, detune: detuneAmount });
       spawnPlayerBulletAt(0);
       if (buffs.spread > 0) {
         spawnPlayerBulletAt(-18);
@@ -425,7 +495,9 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
     }
 
     function spawnEnemyBullet(x: number, y: number, dirX: number, dirY: number) {
-      k.play("enemy_shoot", { volume: 0.5 });
+      // Add pitch randomization to enemy shots as well
+      const detuneAmount = k.rand(-100, 100);
+      playSound("enemy_shoot", { volume: 0.5, detune: detuneAmount });
       k.add([
         k.sprite("bullet_enemy"),
         k.pos(x, y),
@@ -441,7 +513,7 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
     }
 
     function applyItem(kind: ItemKind) {
-      k.play("item_pickup", { volume: 0.7 });
+      playSound("item_pickup", { volume: 0.7 });
       if (kind === "heart") {
         const cfg = ITEM_TYPES.heart;
         if (lives < PLAYER.maxLives) {
@@ -549,7 +621,7 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
       });
 
       enemy.onDeath(() => {
-        k.play("explosion", { volume: 0.6 });
+        playSound("explosion", { volume: 0.65 });
         score += enemy.scoreValue;
         scoreLabel.text = String(score);
         spawnBurst(k, enemy.pos.x, enemy.pos.y, 8);
@@ -562,7 +634,7 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
       k.destroy(bullet);
       enemy.hurt(1);
       if (enemy.hp() > 0) {
-        k.play("hit", { volume: 0.6 });
+        playSound("hit", { volume: 0.65 });
         spawnBurst(k, enemy.pos.x, enemy.pos.y, 3);
       }
     });
@@ -673,9 +745,10 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
     if (currentBGM) {
       currentBGM.stop();
     }
-    currentBGM = k.play("bgm_title", { loop: true, volume: 0.6 });
+    currentBGM = playSound("bgm_title", { loop: true, volume: 0.6 });
 
     addStarfield(k);
+    createMuteButton(k);
     const best = loadBestScore();
 
     k.add([
@@ -711,11 +784,11 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
     });
 
     k.onMousePress(() => {
-      k.play("ui_select", { volume: 0.7 });
+      playSound("ui_select", { volume: 0.7 });
       k.go("game");
     });
     k.onKeyPress(["space", "enter"], () => {
-      k.play("ui_select", { volume: 0.7 });
+      playSound("ui_select", { volume: 0.7 });
       k.go("game");
     });
   });
