@@ -405,6 +405,123 @@ function buildItemMagnet() {
   return g;
 }
 
+// ---------- Boss: Kim Doljun (64x64) - rocky boss with angular silhouette and cracks ----------
+function buildBossDoljun() {
+  const S = 64;
+  const g = createGrid(S, S);
+  const cx = S / 2 - 0.5;
+  const cy = S / 2 - 0.5;
+
+  // Main rocky body - angular, jagged silhouette using fillPolygon
+  // Create an irregular polygonal rock shape with multiple protrusions
+  const mainRock = [
+    [cx - 16, cy + 18],
+    [cx - 20, cy + 8],
+    [cx - 18, cy - 8],
+    [cx - 10, cy - 18],
+    [cx + 4, cy - 20],
+    [cx + 16, cy - 16],
+    [cx + 20, cy - 6],
+    [cx + 22, cy + 10],
+    [cx + 18, cy + 22],
+    [cx + 8, cy + 24],
+    [cx - 8, cy + 24],
+  ];
+  fillPolygon(g, mainRock, "#8b7d6b");
+
+  // Add some internal lumps for more rocky texture with different shades
+  fillEllipse(g, cx - 12, cy - 8, 6, 8, "#9d8f76");
+  fillEllipse(g, cx + 10, cy + 6, 5, 7, "#9d8f76");
+  fillEllipse(g, cx - 2, cy + 16, 4, 5, "#7f7562");
+
+  // Cracks - dark lines to represent stone fissures
+  const crackDarkColor = "#5c513f";
+  // Vertical crack through center
+  fillRect(g, Math.round(cx - 1), Math.round(cy - 15), Math.round(cx + 1), Math.round(cy + 15), crackDarkColor);
+  // Diagonal crack (upper left to center)
+  fillRect(g, Math.round(cx - 12), Math.round(cy - 10), Math.round(cx - 2), Math.round(cy + 2), crackDarkColor);
+  // Diagonal crack (upper right)
+  fillRect(g, Math.round(cx + 2), Math.round(cy - 12), Math.round(cx + 12), Math.round(cy - 4), crackDarkColor);
+  // Horizontal crack (lower)
+  fillRect(g, Math.round(cx - 10), Math.round(cy + 8), Math.round(cx + 10), Math.round(cy + 10), crackDarkColor);
+
+  // Eyes - white with black pupils (cute detail)
+  fillEllipse(g, cx - 8, cy - 6, 4.5, 5.2, "#ffffff"); // left eye white
+  fillEllipse(g, cx + 8, cy - 6, 4.5, 5.2, "#ffffff"); // right eye white
+  fillEllipse(g, cx - 8, cy - 4, 2.2, 2.8, "#1c1c2e"); // left pupil
+  fillEllipse(g, cx + 8, cy - 4, 2.2, 2.8, "#1c1c2e"); // right pupil
+
+  // Small highlight in eyes for shine
+  fillEllipse(g, cx - 9, cy - 7, 1, 1, "#ffffff");
+  fillEllipse(g, cx + 9, cy - 7, 1, 1, "#ffffff");
+
+  // Nose - small orange dot
+  fillEllipse(g, cx, cy + 2, 1.8, 1.8, "#ff9040");
+
+  // Mouth - determined/fierce expression
+  fillRect(g, Math.round(cx - 4), Math.round(cy + 10), Math.round(cx - 1), Math.round(cy + 12), "#1c1c2e");
+  fillRect(g, Math.round(cx + 1), Math.round(cy + 10), Math.round(cx + 4), Math.round(cy + 12), "#1c1c2e");
+
+  // Red blush on cheeks - key cute detail (maintains cuteness)
+  fillEllipse(g, cx - 14, cy + 2, 5.2, 4.2, "#ff6b7a"); // left blush
+  fillEllipse(g, cx + 14, cy + 2, 5.2, 4.2, "#ff6b7a"); // right blush
+  fillEllipse(g, cx - 14, cy + 3, 3.2, 2.6, "#ff9bae"); // left blush highlight
+  fillEllipse(g, cx + 14, cy + 3, 3.2, 2.6, "#ff9bae"); // right blush highlight
+
+  // Glossy highlight for depth
+  addHighlight(g, cx - 8, cy - 12, 4, 3.2, "#b8ad9f");
+
+  // Outline to define the shape
+  addOutline(g, "#4a3f33");
+
+  return g;
+}
+
+// ---------- Projectile: Gimbap cross-section (12x12) - cute spiral rice roll ----------
+function buildBombGimbap() {
+  const w = 12;
+  const h = 12;
+  const g = createGrid(w, h);
+  const cx = w / 2 - 0.5;
+  const cy = h / 2 - 0.5;
+
+  // Outer seaweed (nori) ring - black
+  fillEllipse(g, cx, cy, 5.8, 5.8, "#1c1c2e");
+
+  // Inner white rice
+  fillEllipse(g, cx, cy, 5, 5, "#ffffff");
+
+  // Colorful filling ingredients arranged radially in a spiral-like pattern
+  // Yellow (egg) - top
+  fillEllipse(g, cx, cy - 2.8, 1, 0.8, "#ffdb58");
+
+  // Orange (pickled radish/danmuji) - top-right
+  fillEllipse(g, cx + 2.4, cy - 1.8, 0.9, 0.9, "#ff9940");
+
+  // Green (spinach/cucumber) - right
+  fillEllipse(g, cx + 2.8, cy, 0.8, 1, "#52c41a");
+
+  // Brown (burdock/ham) - bottom-right
+  fillEllipse(g, cx + 2.2, cy + 2, 0.9, 0.8, "#8b6f47");
+
+  // Red (carrot/bell pepper) - bottom
+  fillEllipse(g, cx, cy + 2.8, 1, 0.8, "#ff6b6b");
+
+  // Purple/Pink accent - bottom-left
+  fillEllipse(g, cx - 2.4, cy + 1.8, 0.8, 0.9, "#d9534f");
+
+  // Additional green - left
+  fillEllipse(g, cx - 2.8, cy, 0.8, 1, "#52c41a");
+
+  // Additional yellow-orange - top-left
+  fillEllipse(g, cx - 2.2, cy - 2, 0.9, 0.8, "#ffa940");
+
+  // Outline to define the round shape
+  addOutline(g, "#0d0d15");
+
+  return g;
+}
+
 writePng(buildShip(), "ship");
 writePng(buildEnemyUfo(), "enemy_ufo");
 writePng(buildEnemyBug(), "enemy_bug");
@@ -418,5 +535,7 @@ writePng(buildItemRapid(), "item_rapid");
 writePng(buildItemSpread(), "item_spread");
 writePng(buildItemShield(), "item_shield");
 writePng(buildItemMagnet(), "item_magnet");
+writePng(buildBossDoljun(), "boss_doljun");
+writePng(buildBombGimbap(), "bomb_gimbap");
 
 console.log("All sprites generated in", OUT_DIR);

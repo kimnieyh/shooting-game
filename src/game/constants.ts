@@ -61,3 +61,31 @@ export const ITEM_TYPES = {
 } as const;
 
 export type ItemKind = keyof typeof ITEM_TYPES;
+
+export const BOSS_CONFIG = {
+  firstAppearScore: 500,
+  repeatIntervalScore: 500,
+  hpScaleCapEncounter: 6,
+  hpScalePerEncounter: 0.35, // hpMul(N) = 1 + 0.35 * (min(N,6) - 1)
+  moveSpeedScalePerEncounter: 0.1,
+  bombCooldownScalePerEncounter: 0.05, // cooldownMul(N) = 1 - 0.05*(min(N,6)-1), 각 페이즈 floor 있음(아래 참조)
+  scoreValueFlatBonusPerEncounter: 100, // scoreValue(N) = baseScoreValue + 100*(N-1)
+};
+
+export const BOSS_TYPES = {
+  kimDoljun: {
+    sprite: "boss_doljun",
+    name: "김돌준",
+    baseHp: 48,
+    // sprite is 64x64 (updated from 48x48); scale tuned so on-screen width stays
+    // ~150-180px, matching the previous 48*3.2=153.6px footprint.
+    scale: 2.5,
+    size: 48,
+    idleY: 130,
+    moveRangeX: [100, 380],
+    baseMoveSpeed: 70,
+    baseScoreValue: 300,
+  },
+} as const;
+
+export type BossKind = keyof typeof BOSS_TYPES;

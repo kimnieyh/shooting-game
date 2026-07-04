@@ -1,6 +1,8 @@
 import kaplay from "kaplay";
 import type { GameObj, KAPLAYCtx } from "kaplay";
 import {
+  BOSS_CONFIG,
+  BOSS_TYPES,
   ENEMY_BULLET_SPEED,
   ENEMY_TYPES,
   GAME_HEIGHT,
@@ -42,6 +44,20 @@ function pickItemKind(): ItemKind {
     if (roll <= 0) return kind;
   }
   return entries[entries.length - 1][0];
+}
+
+function pickBossBonusItemKind(): ItemKind {
+  const weighted: [ItemKind, number][] = [
+    ["heart", 40],
+    ["shield", 40],
+    ["rapidFire", 20],
+  ];
+  let roll = Math.random() * 100;
+  for (const [kind, weight] of weighted) {
+    roll -= weight;
+    if (roll <= 0) return kind;
+  }
+  return "rapidFire";
 }
 
 function loadBestScore(): number {
@@ -120,7 +136,7 @@ function spawnRing(
   });
 }
 
-function spawnBurst(k: KAPLAYCtx, x: number, y: number, count = 6) {
+function spawnBurst(k: KAPLAYCtx, x: number, y: number, count = 6, scaleMul = 1) {
   for (let i = 0; i < count; i++) {
     const angle = (Math.PI * 2 * i) / count + k.rand(-0.3, 0.3);
     const speed = k.rand(60, 160);
@@ -128,7 +144,7 @@ function spawnBurst(k: KAPLAYCtx, x: number, y: number, count = 6) {
       k.sprite("spark"),
       k.pos(x, y),
       k.anchor("center"),
-      k.scale(k.rand(1, 1.8)),
+      k.scale(k.rand(1, 1.8) * scaleMul),
       k.opacity(1),
       k.rotate(k.rand(0, 360)),
       k.lifespan(0.35, { fade: 0.25 }),
@@ -169,6 +185,8 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
   k.loadSprite("item_spread", "/sprites/item_spread.png");
   k.loadSprite("item_shield", "/sprites/item_shield.png");
   k.loadSprite("item_magnet", "/sprites/item_magnet.png");
+  k.loadSprite("boss_doljun", "/sprites/boss_doljun.png");
+  k.loadSprite("bomb_gimbap", "/sprites/bomb_gimbap.png");
 
   // Load sounds
   k.loadSound("ui_select", "/sounds/ui_select.wav");
@@ -180,6 +198,7 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
   k.loadSound("shield_block", "/sounds/shield_block.wav");
   k.loadSound("item_pickup", "/sounds/item_pickup.wav");
   k.loadSound("game_over", "/sounds/game_over.wav");
+  k.loadSound("boss_throw", "/sounds/boss_throw.wav");
   k.loadMusic("bgm_title", "/sounds/bgm_title.wav");
   k.loadMusic("bgm_game", "/sounds/bgm_game.wav");
 
@@ -188,7 +207,16 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
   // Load initial mute state
   isMuted = loadMuteState();
   // Apply initial global volume based on mute state
-  k.volume(isMuted ? 0 : 1);
+  k.setVolume(isMuted ? 0 : 1);
+
+  // Smoothly ramp master volume instead of snapping it, so toggling mute
+  // while BGM/SFX are mid-waveform doesn't produce an audible click/pop.
+  let volumeTween: ReturnType<typeof k.tween> | null = null;
+  function applyMasterVolume(target: number) {
+    volumeTween?.cancel();
+    const from = k.getVolume();
+    volumeTween = k.tween(from, target, 0.12, (v) => k.setVolume(v), k.easings.linear);
+  }
 
   // Helper function to calculate effective volume
   function getEffectiveVolume(baseVolume: number): number {
@@ -222,8 +250,9 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
     muteButton.onClick(() => {
       isMuted = !isMuted;
       saveMuteState(isMuted);
-      // Apply global volume immediately to affect running BGM
-      k.volume(isMuted ? 0 : 1);
+      // Ramp (not snap) the volume so it also affects already-playing BGM
+      // without producing a click/pop artifact.
+      applyMasterVolume(isMuted ? 0 : 1);
       createMuteButton(k);
     });
 
@@ -301,6 +330,7 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
     });
 
     k.onMousePress(() => {
+      if (muteButton?.isHovering()) return;
       playSound("ui_select", { volume: 0.7 });
       k.go("game");
     });
@@ -328,6 +358,24 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
     let spawnTimer = 0;
     let fireTimer = 0;
     let dragging = false;
+
+    // ---- boss state ----
+    let bossEncounterCount = 0; // N, starts at 1 on first encounter
+    let nextBossThreshold = BOSS_CONFIG.firstAppearScore;
+    let activeBoss: GameObj | null = null;
+    let bossPhase: 1 | 2 | null = null;
+    let bossPhaseTransitioning = false;
+    let bossDefeatTriggered = false;
+    let bossInvuln = false;
+    let bossMaxHp = 0;
+    let bossMoveDir = 1;
+    let bossThrowTimer = 0;
+    let bossEscortTimer = 0;
+    let bossBombsInFlight = 0;
+    let bossBlinkTime = 0;
+    let bossHpBarBg: GameObj | null = null;
+    let bossHpBarFill: GameObj | null = null;
+    let bossNameLabel: GameObj | null = null;
 
     const player = k.add([
       k.sprite("ship"),
@@ -541,9 +589,7 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
       spawnRing(k, player.pos.x, player.pos.y, cfg.color, 16, 220);
     }
 
-    function spawnItemDrop(x: number, y: number) {
-      if (Math.random() >= ITEM_DROP_CHANCE) return;
-      const kind = pickItemKind();
+    function createItemDrop(x: number, y: number, kind: ItemKind) {
       const cfg = ITEM_TYPES[kind];
       k.add([
         k.sprite(cfg.sprite),
@@ -572,12 +618,19 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
       });
     }
 
-    function spawnEnemy() {
+    function spawnItemDrop(x: number, y: number, chance: number = ITEM_DROP_CHANCE) {
+      if (Math.random() >= chance) return;
+      createItemDrop(x, y, pickItemKind());
+    }
+
+    function spawnEnemy(opts?: { kind?: EnemyKind; x?: number; tag?: string }) {
       const roll = Math.random();
-      const kind: EnemyKind = roll < 0.45 ? "ufo" : roll < 0.85 ? "bug" : "robot";
+      const kind: EnemyKind =
+        opts?.kind ?? (roll < 0.45 ? "ufo" : roll < 0.85 ? "bug" : "robot");
       const cfg = ENEMY_TYPES[kind];
       const speed = k.rand(cfg.speed[0], cfg.speed[1]) + Math.min(elapsed * 1.5, 90);
-      const x = k.rand(cfg.size + 10, GAME_WIDTH - cfg.size - 10);
+      const x = opts?.x ?? k.rand(cfg.size + 10, GAME_WIDTH - cfg.size - 10);
+      const extraTags = opts?.tag ? [opts.tag] : [];
 
       const enemy = k.add([
         k.sprite(cfg.sprite),
@@ -588,6 +641,7 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
         k.health(cfg.hp),
         k.z(8),
         "enemy",
+        ...extraTags,
         {
           baseX: x,
           wobble: k.rand(0, Math.PI * 2),
@@ -625,8 +679,414 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
         score += enemy.scoreValue;
         scoreLabel.text = String(score);
         spawnBurst(k, enemy.pos.x, enemy.pos.y, 8);
-        spawnItemDrop(enemy.pos.x, enemy.pos.y);
+        // boss escorts drop items at a boosted rate, scoped to this encounter only
+        spawnItemDrop(enemy.pos.x, enemy.pos.y, enemy.is("bossEscort") ? 0.35 : ITEM_DROP_CHANCE);
         k.destroy(enemy);
+      });
+    }
+
+    // ---- boss: "김돌준" (Kim Doljun) ----
+    function bossHpMul(n: number) {
+      return (
+        1 +
+        BOSS_CONFIG.hpScalePerEncounter * (Math.min(n, BOSS_CONFIG.hpScaleCapEncounter) - 1)
+      );
+    }
+    function bossSpeedMul(n: number) {
+      return (
+        1 +
+        BOSS_CONFIG.moveSpeedScalePerEncounter *
+          (Math.min(n, BOSS_CONFIG.hpScaleCapEncounter) - 1)
+      );
+    }
+    function bossCooldownMul(n: number) {
+      return (
+        1 -
+        BOSS_CONFIG.bombCooldownScalePerEncounter *
+          (Math.min(n, BOSS_CONFIG.hpScaleCapEncounter) - 1)
+      );
+    }
+    function bossScoreValue(n: number) {
+      return (
+        BOSS_TYPES.kimDoljun.baseScoreValue +
+        BOSS_CONFIG.scoreValueFlatBonusPerEncounter * (n - 1)
+      );
+    }
+
+    function showBossDialogue(text: string, duration: number, onDone: () => void) {
+      const box = k.add([
+        k.rect(GAME_WIDTH - 40, 74, { radius: 6 }),
+        k.pos(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 150),
+        k.anchor("center"),
+        k.color(20, 14, 40),
+        k.opacity(0.85),
+        k.outline(2, k.rgb(255, 255, 255)),
+        k.fixed(),
+        k.z(96),
+      ]);
+      const label = k.add([
+        k.text(text, { size: 13, align: "center", width: GAME_WIDTH - 64 }),
+        k.pos(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 150),
+        k.anchor("center"),
+        k.color(255, 255, 255),
+        k.fixed(),
+        k.z(97),
+      ]);
+      k.wait(duration, () => {
+        k.destroy(box);
+        k.destroy(label);
+        onDone();
+      });
+    }
+
+    function spawnBossTelegraphRing(x: number, y: number, duration: number) {
+      const startR = 10;
+      const endR = 50;
+      const ring = k.add([
+        k.circle(startR),
+        k.pos(x, y),
+        k.anchor("center"),
+        k.opacity(0.65),
+        k.color(255, 90, 40),
+        k.outline(2, k.rgb(255, 200, 120)),
+        k.z(9),
+        { elapsedT: 0 },
+      ]);
+      ring.onUpdate(function (this: GameObj) {
+        this.elapsedT += k.dt();
+        const p = Math.min(this.elapsedT / duration, 1);
+        this.radius = startR + (endR - startR) * p;
+        this.opacity = 0.65 * (1 - p * 0.7);
+        if (p >= 1) k.destroy(this);
+      });
+    }
+
+    // lobs a lunchbox bomb from (fromX, fromY) to a locked-on (targetX, targetY);
+    // shows a growing telegraph ring at the landing spot for the whole flight time
+    function bossThrowBombAt(fromX: number, fromY: number, targetX: number, targetY: number) {
+      const duration = 1.1;
+      const aoeRadius = 50;
+      bossBombsInFlight += 1;
+      playSound("boss_throw", { volume: 0.65 });
+      spawnBossTelegraphRing(targetX, targetY, duration);
+
+      const bomb = k.add([
+        k.sprite("bomb_gimbap"),
+        k.pos(fromX, fromY),
+        k.anchor("center"),
+        k.scale(2.2),
+        k.rotate(0),
+        k.z(9),
+        { elapsedT: 0 },
+      ]);
+      bomb.onUpdate(function (this: GameObj) {
+        this.elapsedT += k.dt();
+        const p = Math.min(this.elapsedT / duration, 1);
+        const arcHeight = 90;
+        this.pos.x = k.lerp(fromX, targetX, p);
+        this.pos.y = k.lerp(fromY, targetY, p) - Math.sin(p * Math.PI) * arcHeight;
+        this.angle += 340 * k.dt();
+      });
+
+      k.wait(duration, () => {
+        k.destroy(bomb);
+        bossBombsInFlight = Math.max(0, bossBombsInFlight - 1);
+        spawnBurst(k, targetX, targetY, 12);
+        k.shake(2);
+        if (player.exists()) {
+          const dist = Math.hypot(player.pos.x - targetX, player.pos.y - targetY);
+          if (dist <= aoeRadius) damagePlayer();
+        }
+      });
+    }
+
+    // phase 2 only: spawns 1 ufo + 1 bug escort pair from the top corners,
+    // skipping the whole tick if it would exceed the concurrent escort cap
+    function trySpawnBossEscorts(n: number) {
+      const cap = n >= 3 ? 4 : 3;
+      const alive = k.get("bossEscort").length;
+      if (alive + 2 > cap) return;
+      spawnEnemy({ kind: "ufo", x: 50, tag: "bossEscort" });
+      spawnEnemy({ kind: "bug", x: GAME_WIDTH - 50, tag: "bossEscort" });
+    }
+
+    function triggerBossPhaseTransition(boss: GameObj) {
+      bossPhaseTransitioning = true;
+      bossInvuln = true;
+      bossBlinkTime = 0;
+      k.shake(5);
+
+      const lines = [
+        "뭐?! 반이나 깎였다고?! 좋아, 오늘 저녁은 너로 정했다!!",
+        "이 도시락은 아직 안 비었어! 한 그릇 더 간다!!",
+      ];
+      showBossDialogue(lines[Math.floor(Math.random() * lines.length)], 2.2, () => {});
+
+      // guaranteed drop, no ITEM_DROP_CHANCE roll
+      createItemDrop(boss.pos.x, boss.pos.y, pickBossBonusItemKind());
+
+      k.wait(3.2, () => {
+        boss.opacity = 1;
+        bossPhaseTransitioning = false;
+        bossInvuln = false;
+        bossPhase = 2;
+        bossThrowTimer = 0.6;
+        bossEscortTimer = 3;
+      });
+    }
+
+    function startBossDefeatSequence(boss: GameObj, n: number) {
+      if (bossDefeatTriggered) return;
+      bossDefeatTriggered = true;
+      bossInvuln = true;
+      bossPhase = null;
+      playSound("explosion", { volume: 0.7 });
+
+      let step = 0;
+      const runStep = () => {
+        if (step < 3) {
+          spawnBurst(
+            k,
+            boss.pos.x + k.rand(-14, 14),
+            boss.pos.y + k.rand(-14, 14),
+            Math.floor(k.rand(10, 14))
+          );
+          step += 1;
+          k.wait(0.25, runStep);
+          return;
+        }
+
+        spawnBurst(k, boss.pos.x, boss.pos.y, 24, 2);
+        playSound("explosion", { volume: 0.85 });
+        k.shake(8);
+        k.destroy(boss);
+
+        const lines = [
+          "속이... 더부룩하다... 오늘은 여기까지...",
+          "밥이 넘어가야 할 텐데... 졌잘싸...",
+        ];
+        showBossDialogue(lines[Math.floor(Math.random() * lines.length)], 2.5, () => {
+          const reward = bossScoreValue(n);
+          score += reward;
+          scoreLabel.text = String(score);
+          spawnPopupText(k, GAME_WIDTH / 2, GAME_HEIGHT / 2, `+${reward}`, [
+            255, 220, 120,
+          ] as const);
+
+          k.wait(0.3, () => {
+            score += 100;
+            scoreLabel.text = String(score);
+            spawnPopupText(k, GAME_WIDTH / 2, GAME_HEIGHT / 2 - 30, "CLEAR BONUS +100", [
+              120, 255, 180,
+            ] as const);
+          });
+
+          k.wait(1.0, () => {
+            activeBoss = null;
+            bossPhase = null;
+            if (bossHpBarBg) k.destroy(bossHpBarBg);
+            if (bossHpBarFill) k.destroy(bossHpBarFill);
+            if (bossNameLabel) k.destroy(bossNameLabel);
+            bossHpBarBg = null;
+            bossHpBarFill = null;
+            bossNameLabel = null;
+          });
+        });
+      };
+      runStep();
+    }
+
+    function beginBossEncounter() {
+      bossEncounterCount += 1;
+      nextBossThreshold += BOSS_CONFIG.repeatIntervalScore;
+      const n = bossEncounterCount;
+      const repeat = n > 1;
+      const cfg = BOSS_TYPES.kimDoljun;
+
+      bossPhase = null;
+      bossPhaseTransitioning = false;
+      bossDefeatTriggered = false;
+      bossInvuln = true;
+      bossMoveDir = 1;
+      bossThrowTimer = 0;
+      bossEscortTimer = n >= 3 ? 6 : 7;
+      bossBombsInFlight = 0;
+      bossMaxHp = Math.max(1, Math.round(cfg.baseHp * bossHpMul(n)));
+
+      const boss = k.add([
+        k.sprite(cfg.sprite),
+        k.pos(GAME_WIDTH / 2, repeat ? cfg.idleY : -60),
+        k.anchor("center"),
+        k.scale(cfg.scale),
+        k.area(),
+        k.health(bossMaxHp),
+        k.opacity(0),
+        k.z(8),
+        "boss",
+      ]);
+      activeBoss = boss;
+
+      bossHpBarBg = k.add([
+        k.rect(220, 10, { radius: 3 }),
+        k.pos(GAME_WIDTH / 2, 80),
+        k.anchor("center"),
+        k.color(40, 20, 30),
+        k.opacity(0),
+        k.outline(1, k.rgb(255, 255, 255)),
+        k.fixed(),
+        k.z(101),
+      ]);
+      bossHpBarFill = k.add([
+        k.rect(214, 6, { radius: 2 }),
+        k.pos(GAME_WIDTH / 2 - 107, 80),
+        k.anchor("left"),
+        k.color(255, 90, 90),
+        k.opacity(0),
+        k.fixed(),
+        k.z(102),
+      ]);
+      bossNameLabel = k.add([
+        k.text(cfg.name, { size: 12 }),
+        k.pos(GAME_WIDTH / 2, 68),
+        k.anchor("center"),
+        k.color(255, 255, 255),
+        k.opacity(0),
+        k.fixed(),
+        k.z(102),
+      ]);
+
+      // keep the HP bar fill in sync at all times boss is alive
+      boss.onUpdate(() => {
+        if (!bossHpBarFill) return;
+        const ratio = bossMaxHp > 0 ? Math.max(0, boss.hp() / bossMaxHp) : 0;
+        bossHpBarFill.width = 214 * ratio;
+      });
+
+      // movement + attack loop, gated by bossPhase/bossPhaseTransitioning
+      boss.onUpdate(() => {
+        if (bossPhaseTransitioning) {
+          bossBlinkTime += k.dt();
+          boss.opacity = 0.4 + Math.abs(Math.sin(bossBlinkTime * 18)) * 0.6;
+          return;
+        }
+        if (bossPhase === null) return;
+
+        const speedMul = bossSpeedMul(n);
+        const cooldownMul = bossCooldownMul(n);
+        const rangeMin = bossPhase === 1 ? cfg.moveRangeX[0] : 70;
+        const rangeMax = bossPhase === 1 ? cfg.moveRangeX[1] : 410;
+        const moveSpeed = (bossPhase === 1 ? cfg.baseMoveSpeed : 95) * speedMul;
+
+        boss.pos.x += bossMoveDir * moveSpeed * k.dt();
+        if (boss.pos.x >= rangeMax) {
+          boss.pos.x = rangeMax;
+          bossMoveDir = -1;
+        } else if (boss.pos.x <= rangeMin) {
+          boss.pos.x = rangeMin;
+          bossMoveDir = 1;
+        }
+        boss.pos.y = cfg.idleY + Math.sin(k.time() * 3) * 6;
+
+        const targetX = player.exists() ? player.pos.x : boss.pos.x;
+        const targetY = player.exists() ? player.pos.y : GAME_HEIGHT - 110;
+
+        bossThrowTimer -= k.dt();
+        if (bossPhase === 1) {
+          if (bossThrowTimer <= 0 && bossBombsInFlight < 1) {
+            bossThrowTimer = Math.max(1.8 * cooldownMul, 1.3);
+            bossThrowBombAt(boss.pos.x, boss.pos.y, targetX, targetY);
+          }
+        } else {
+          if (bossThrowTimer <= 0) {
+            bossThrowTimer = Math.max(1.4 * cooldownMul, 1.0);
+            bossThrowBombAt(boss.pos.x, boss.pos.y, targetX, targetY);
+            // second bomb always offset to a single random side, so the other
+            // side stays clear as an escape route (never sandwich the player)
+            const sign = Math.random() < 0.5 ? -1 : 1;
+            const mag = k.rand(40, 70);
+            bossThrowBombAt(boss.pos.x, boss.pos.y, targetX + sign * mag, targetY);
+          }
+
+          bossEscortTimer -= k.dt();
+          if (bossEscortTimer <= 0) {
+            bossEscortTimer = n >= 3 ? 6 : 7;
+            trySpawnBossEscorts(n);
+          }
+        }
+      });
+
+      boss.onDeath(() => startBossDefeatSequence(boss, n));
+
+      // ---- entrance sequence ----
+      k.shake(4);
+      const warnDur = repeat ? 1.0 : 2.0;
+      const warning = k.add([
+        k.text("위험! 거대 신호 접근 중", { size: 20, align: "center" }),
+        k.pos(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 60),
+        k.anchor("center"),
+        k.color(255, 90, 90),
+        k.opacity(1),
+        k.fixed(),
+        k.z(95),
+      ]);
+      warning.onUpdate(() => {
+        warning.opacity = 0.5 + Math.sin(k.time() * 12) * 0.5;
+      });
+
+      if (currentBGM) {
+        const startVol = currentBGM.volume;
+        k.tween(startVol, startVol * 0.3, 1.0, (v) => {
+          if (currentBGM) currentBGM.volume = v;
+        });
+      }
+
+      k.wait(warnDur, () => {
+        k.destroy(warning);
+
+        const afterEntrance = () => {
+          const dialogueDuration = repeat ? 1.8 : 3.0;
+          showBossDialogue(
+            "나는 김돌준. 용케 여기까지 왔군. 하지만 여기가 끝이다!! 내 밥이나 먹어라!!",
+            dialogueDuration,
+            () => {
+              k.tween(0, 1, 0.3, (o) => {
+                if (bossHpBarBg) bossHpBarBg.opacity = o;
+                if (bossHpBarFill) bossHpBarFill.opacity = o;
+                if (bossNameLabel) bossNameLabel.opacity = o;
+              });
+              if (currentBGM) {
+                const cur = currentBGM.volume;
+                k.tween(cur, 0.5, 0.3, (v) => {
+                  if (currentBGM) currentBGM.volume = v;
+                });
+              }
+              const grace = repeat ? 0.4 : 0.8;
+              k.wait(grace, () => {
+                bossInvuln = false;
+                bossPhase = 1;
+              });
+            }
+          );
+        };
+
+        if (!repeat) {
+          boss.opacity = 1;
+          k.tween(
+            boss.pos.y,
+            cfg.idleY,
+            1.2,
+            (y) => {
+              boss.pos.y = y;
+            },
+            k.easings.easeOutQuad
+          );
+          k.wait(1.2, afterEntrance);
+        } else {
+          k.tween(0, 1, 0.4, (o) => {
+            boss.opacity = o;
+          });
+          k.wait(0.4, afterEntrance);
+        }
       });
     }
 
@@ -652,6 +1112,23 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
     k.onCollide("item", "player", (item) => {
       applyItem(item.kind as ItemKind);
       k.destroy(item);
+    });
+
+    k.onCollide("playerBullet", "boss", (bullet, boss) => {
+      k.destroy(bullet);
+      if (bossInvuln) return;
+      boss.hurt(1);
+      if (boss.hp() > 0) {
+        playSound("hit", { volume: 0.5 });
+        spawnBurst(k, boss.pos.x, boss.pos.y, 2);
+        if (bossPhase === 1 && !bossPhaseTransitioning && boss.hp() <= bossMaxHp / 2) {
+          triggerBossPhaseTransition(boss);
+        }
+      }
+    });
+
+    k.onCollide("boss", "player", () => {
+      damagePlayer();
     });
 
     k.onUpdate(() => {
@@ -729,12 +1206,19 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
         spawnPlayerBullet();
       }
 
-      // enemy spawning, ramps up over time
-      spawnTimer -= k.dt();
-      if (spawnTimer <= 0) {
-        const interval = Math.max(1.5 - elapsed * 0.01, 0.5);
-        spawnTimer = interval;
-        spawnEnemy();
+      // enemy spawning, ramps up over time — suspended while a boss fight is active
+      if (!activeBoss) {
+        spawnTimer -= k.dt();
+        if (spawnTimer <= 0) {
+          const interval = Math.max(1.5 - elapsed * 0.01, 0.5);
+          spawnTimer = interval;
+          spawnEnemy();
+        }
+      }
+
+      // boss trigger: fires once per crossed score threshold (500, 1000, 1500, ...)
+      if (!activeBoss && score >= nextBossThreshold) {
+        beginBossEncounter();
       }
     });
   });
@@ -784,6 +1268,7 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
     });
 
     k.onMousePress(() => {
+      if (muteButton?.isHovering()) return;
       playSound("ui_select", { volume: 0.7 });
       k.go("game");
     });

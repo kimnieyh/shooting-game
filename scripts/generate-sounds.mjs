@@ -370,6 +370,39 @@ function generateGameBGM() {
   return samples.slice(0, totalSamples);
 }
 
+
+// 10. Boss throw sound - gravelly growl for comic villain
+function generateBossThrowSound() {
+  const duration = 0.4; // 400ms - short and punchy
+  const sampleRate = 44100;
+  const totalSamples = Math.floor(duration * sampleRate);
+  const samples = [];
+
+  // Main bass growl with sine + square mix and pitch bend
+  for (let i = 0; i < totalSamples; i++) {
+    const progress = i / totalSamples;
+    // Start at 120Hz, sweep down to 80Hz (low, menacing but comic)
+    const baseFreq = 120 - progress * 40;
+    // Add vibrato for "grumbling" effect - 6 vibrato cycles create the "우어어" tremolo
+    const vibrato = Math.sin(progress * Math.PI * 6) * 15;
+    const freq = baseFreq + vibrato;
+    const phase = (2 * Math.PI * freq * i) / sampleRate;
+    
+    // Mix sine (smooth, tonal) and square (harsh, gritty)
+    const sine = Math.sin(phase);
+    const square = (phase % (2 * Math.PI)) < Math.PI ? 1 : -1;
+    samples.push(sine * 0.6 + square * 0.2);
+  }
+
+  // Mix in white noise for additional grittiness (20% noise for texture)
+  for (let i = 0; i < totalSamples; i++) {
+    const noise = Math.random() * 2 - 1;
+    samples[i] = samples[i] * 0.8 + noise * 0.2;
+  }
+
+  return applyEnvelope(samples, 0.02, 0.38, sampleRate);
+}
+
 // ========== Generate all sounds ==========
 
 console.log("Generating sound effects...");
@@ -385,5 +418,7 @@ saveWav(generateItemPickupSound(), "item_pickup");
 saveWav(generateGameOverSound(), "game_over");
 saveWav(generateTitleBGM(), "bgm_title");
 saveWav(generateGameBGM(), "bgm_game");
+
+saveWav(generateBossThrowSound(), "boss_throw");
 
 console.log("All sounds generated in", OUT_DIR);
