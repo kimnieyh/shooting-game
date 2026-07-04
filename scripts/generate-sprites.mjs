@@ -90,6 +90,27 @@ function fillStar(grid, cx, cy, rOuter, rInner, points, color, rotation = -Math.
   }
 }
 
+function fillPolygon(grid, points, color) {
+  const { length: h } = grid;
+  const w = grid[0].length;
+  const inside = (px, py) => {
+    let c = false;
+    for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+      const [xi, yi] = points[i];
+      const [xj, yj] = points[j];
+      const intersect =
+        yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi;
+      if (intersect) c = !c;
+    }
+    return c;
+  };
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (inside(x + 0.5, y + 0.5)) setPixel(grid, x, y, color);
+    }
+  }
+}
+
 // Outline pass: any transparent pixel adjacent (8-dir) to a filled pixel becomes outline color.
 function addOutline(grid, outlineColor) {
   const h = grid.length;
@@ -290,6 +311,100 @@ function buildStarParticle() {
   return g;
 }
 
+// ---------- Item: Rapid Fire bolt (16x16) ----------
+function buildItemRapid() {
+  const S = 16;
+  const g = createGrid(S, S);
+  fillPolygon(
+    g,
+    [
+      [9, 1],
+      [5, 8],
+      [8, 8],
+      [6, 15],
+      [12, 6],
+      [8, 7],
+    ],
+    "#ffe873"
+  );
+  addHighlight(g, 8, 4, 1.4, 1.6, "#fffde0");
+  addOutline(g, "#8a6d00");
+  return g;
+}
+
+// ---------- Item: Spread Shot (16x16), three diverging arrows ----------
+function buildItemSpread() {
+  const S = 16;
+  const g = createGrid(S, S);
+  fillPolygon(
+    g,
+    [
+      [2, 14],
+      [6, 14],
+      [3, 3],
+    ],
+    "#4fd6ff"
+  );
+  fillPolygon(
+    g,
+    [
+      [6, 15],
+      [10, 15],
+      [8, 2],
+    ],
+    "#4fd6ff"
+  );
+  fillPolygon(
+    g,
+    [
+      [10, 14],
+      [14, 14],
+      [13, 3],
+    ],
+    "#4fd6ff"
+  );
+  addOutline(g, "#123055");
+  return g;
+}
+
+// ---------- Item: Shield (16x16) ----------
+function buildItemShield() {
+  const S = 16;
+  const g = createGrid(S, S);
+  fillPolygon(
+    g,
+    [
+      [8, 1],
+      [13, 3],
+      [13, 8],
+      [8, 15],
+      [3, 8],
+      [3, 3],
+    ],
+    "#7fd1ff"
+  );
+  fillRect(g, 7, 5, 8, 10, "#eaf7ff");
+  fillRect(g, 5, 7, 10, 8, "#eaf7ff");
+  addHighlight(g, 5.5, 4.5, 1.6, 1.6, "#ffffff");
+  addOutline(g, "#123a66");
+  return g;
+}
+
+// ---------- Item: Magnet (16x16) ----------
+function buildItemMagnet() {
+  const S = 16;
+  const g = createGrid(S, S);
+  const cx = 7.5;
+  fillRect(g, 3, 4, 5, 12, "#c9d6e0");
+  fillRect(g, 10, 4, 12, 12, "#c9d6e0");
+  fillEllipse(g, cx, 11, 5.5, 4, "#c9d6e0", (x, y) => y >= 8);
+  fillRect(g, 3, 4, 5, 6, "#ff5d5d");
+  fillRect(g, 10, 4, 12, 6, "#ff5d5d");
+  addHighlight(g, 4, 5, 0.8, 1, "#ffb3b3");
+  addOutline(g, "#3a4b5c");
+  return g;
+}
+
 writePng(buildShip(), "ship");
 writePng(buildEnemyUfo(), "enemy_ufo");
 writePng(buildEnemyBug(), "enemy_bug");
@@ -299,5 +414,9 @@ writePng(buildBulletEnemy(), "bullet_enemy");
 writePng(buildHeart(), "heart");
 writePng(buildSpark(), "spark");
 writePng(buildStarParticle(), "star");
+writePng(buildItemRapid(), "item_rapid");
+writePng(buildItemSpread(), "item_spread");
+writePng(buildItemShield(), "item_shield");
+writePng(buildItemMagnet(), "item_magnet");
 
 console.log("All sprites generated in", OUT_DIR);

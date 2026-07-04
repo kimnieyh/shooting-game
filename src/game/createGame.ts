@@ -5,10 +5,30 @@ import {
   ENEMY_TYPES,
   GAME_HEIGHT,
   GAME_WIDTH,
+  ITEM_DROP_CHANCE,
+  ITEM_FALL_SPEED,
+  ITEM_MAGNET_PULL_SPEED,
+  ITEM_MAGNET_RADIUS,
+  ITEM_TYPES,
   PLAYER,
   STORAGE_BEST_SCORE_KEY,
   type EnemyKind,
+  type ItemKind,
 } from "./constants";
+
+type BuffKind = Exclude<ItemKind, "heart">;
+const BUFF_ORDER: BuffKind[] = ["rapidFire", "spread", "shield", "magnet"];
+
+function pickItemKind(): ItemKind {
+  const entries = Object.entries(ITEM_TYPES) as [ItemKind, (typeof ITEM_TYPES)[ItemKind]][];
+  const total = entries.reduce((sum, [, cfg]) => sum + cfg.weight, 0);
+  let roll = Math.random() * total;
+  for (const [kind, cfg] of entries) {
+    roll -= cfg.weight;
+    if (roll <= 0) return kind;
+  }
+  return entries[entries.length - 1][0];
+}
 
 function loadBestScore(): number {
   if (typeof window === "undefined") return 0;
@@ -39,6 +59,51 @@ function addStarfield(k: KAPLAYCtx) {
       }
     });
   }
+}
+
+function spawnPopupText(
+  k: KAPLAYCtx,
+  x: number,
+  y: number,
+  text: string,
+  color: readonly [number, number, number]
+) {
+  const popup = k.add([
+    k.text(text, { size: 16 }),
+    k.pos(x, y),
+    k.anchor("center"),
+    k.color(...color),
+    k.opacity(1),
+    k.z(90),
+    k.lifespan(0.8, { fade: 0.3 }),
+  ]);
+  popup.onUpdate(() => {
+    popup.pos.y -= 34 * k.dt();
+  });
+}
+
+function spawnRing(
+  k: KAPLAYCtx,
+  x: number,
+  y: number,
+  color: readonly [number, number, number],
+  startRadius: number,
+  growSpeed: number
+) {
+  const ring = k.add([
+    k.circle(startRadius),
+    k.pos(x, y),
+    k.anchor("center"),
+    k.opacity(0.6),
+    k.color(...color),
+    k.outline(2, k.rgb(255, 255, 255)),
+    k.z(9),
+  ]);
+  ring.onUpdate(function (this: GameObj) {
+    this.radius += growSpeed * k.dt();
+    this.opacity -= k.dt() * 1.1;
+    if (this.opacity <= 0) k.destroy(this);
+  });
 }
 
 function spawnBurst(k: KAPLAYCtx, x: number, y: number, count = 6) {
@@ -86,9 +151,34 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
   k.loadSprite("heart", "/sprites/heart.png");
   k.loadSprite("spark", "/sprites/spark.png");
   k.loadSprite("star", "/sprites/star.png");
+  k.loadSprite("item_rapid", "/sprites/item_rapid.png");
+  k.loadSprite("item_spread", "/sprites/item_spread.png");
+  k.loadSprite("item_shield", "/sprites/item_shield.png");
+  k.loadSprite("item_magnet", "/sprites/item_magnet.png");
+
+  // Load sounds
+  k.loadSound("ui_select", "/sounds/ui_select.wav");
+  k.loadSound("player_shoot", "/sounds/player_shoot.wav");
+  k.loadSound("enemy_shoot", "/sounds/enemy_shoot.wav");
+  k.loadSound("hit", "/sounds/hit.wav");
+  k.loadSound("explosion", "/sounds/explosion.wav");
+  k.loadSound("player_damage", "/sounds/player_damage.wav");
+  k.loadSound("shield_block", "/sounds/shield_block.wav");
+  k.loadSound("item_pickup", "/sounds/item_pickup.wav");
+  k.loadSound("game_over", "/sounds/game_over.wav");
+  k.loadMusic("bgm_title", "/sounds/bgm_title.wav");
+  k.loadMusic("bgm_game", "/sounds/bgm_game.wav");
+
+  let currentBGM: ReturnType<typeof k.play> | null = null;
 
   // ---------------- Start scene ----------------
   k.scene("start", () => {
+    // Stop any existing BGM and play title BGM
+    if (currentBGM) {
+      currentBGM.stop();
+    }
+    currentBGM = k.play("bgm_title", { loop: true, volume: 0.6 });
+
     addStarfield(k);
     const best = loadBestScore();
 
@@ -143,12 +233,24 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
       prompt.opacity = 0.55 + Math.sin(k.time() * 4) * 0.45;
     });
 
-    k.onMousePress(() => k.go("game"));
-    k.onKeyPress(["space", "enter"], () => k.go("game"));
+    k.onMousePress(() => {
+      k.play("ui_select", { volume: 0.7 });
+      k.go("game");
+    });
+    k.onKeyPress(["space", "enter"], () => {
+      k.play("ui_select", { volume: 0.7 });
+      k.go("game");
+    });
   });
 
   // ---------------- Game scene ----------------
   k.scene("game", () => {
+    // Stop title BGM and play game BGM
+    if (currentBGM) {
+      currentBGM.stop();
+    }
+    currentBGM = k.play("bgm_game", { loop: true, volume: 0.5 });
+
     addStarfield(k);
 
     let score = 0;
@@ -198,6 +300,53 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
     }
     renderHearts();
 
+    const buffs: Record<ItemKind, number> = {
+      heart: 0,
+      rapidFire: 0,
+      spread: 0,
+      shield: 0,
+      magnet: 0,
+    };
+
+    const buffUI = BUFF_ORDER.map((kind, i) => {
+      const cfg = ITEM_TYPES[kind];
+      const x = 16 + i * 30;
+      const y = 46;
+      const icon = k.add([
+        k.sprite(cfg.sprite),
+        k.pos(x, y),
+        k.anchor("topleft"),
+        k.scale(1.2),
+        k.opacity(0.25),
+        k.fixed(),
+        k.z(100),
+      ]);
+      const bar = k.add([
+        k.rect(24, 3),
+        k.pos(x, y + 22),
+        k.anchor("topleft"),
+        k.color(cfg.color[0], cfg.color[1], cfg.color[2]),
+        k.opacity(0.25),
+        k.fixed(),
+        k.z(100),
+      ]);
+      return { kind, icon, bar };
+    });
+
+    function updateBuffUI() {
+      for (const { kind, icon, bar } of buffUI) {
+        const cfg = ITEM_TYPES[kind];
+        const remain = buffs[kind];
+        const active = remain > 0;
+        icon.opacity = active ? 1 : 0.25;
+        bar.opacity = active ? 1 : 0.25;
+        bar.width = active ? Math.max(2, 24 * (remain / cfg.duration)) : 24;
+      }
+    }
+
+    let shieldAura: GameObj | null = null;
+    let magnetPulseTimer = 0;
+
     function clampToStage(obj: GameObj, margin: number) {
       obj.pos.x = k.clamp(obj.pos.x, margin, GAME_WIDTH - margin);
       obj.pos.y = k.clamp(obj.pos.y, margin, GAME_HEIGHT - margin);
@@ -218,12 +367,23 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
     });
 
     function endGame() {
+      k.play("game_over", { volume: 0.7 });
+      if (currentBGM) {
+        currentBGM.stop();
+      }
       saveBestScore(Math.max(score, loadBestScore()));
       k.go("gameover", score);
     }
 
     function damagePlayer() {
       if (invulnTimer > 0) return;
+      if (buffs.shield > 0) {
+        k.play("shield_block", { volume: 0.7 });
+        k.shake(3);
+        spawnRing(k, player.pos.x, player.pos.y, ITEM_TYPES.shield.color, 20, 260);
+        return;
+      }
+      k.play("player_damage", { volume: 0.7 });
       lives -= 1;
       invulnTimer = PLAYER.invulnDuration;
       k.shake(6);
@@ -235,21 +395,37 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
       }
     }
 
-    function spawnPlayerBullet() {
+    function spawnPlayerBulletAt(angleOffsetDeg: number) {
+      const rad = (angleOffsetDeg * Math.PI) / 180;
+      const dir = k.vec2(Math.sin(rad), -Math.cos(rad));
       k.add([
         k.sprite("bullet_player"),
         k.pos(player.pos.x, player.pos.y - 26),
         k.anchor("center"),
         k.scale(2),
         k.area(),
-        k.move(k.vec2(0, -1), PLAYER.bulletSpeed),
+        k.rotate(angleOffsetDeg),
+        k.move(dir, PLAYER.bulletSpeed),
         k.offscreen({ destroy: true }),
         k.z(5),
         "playerBullet",
       ]);
     }
 
+    function spawnPlayerBullet() {
+      k.play("player_shoot", { volume: 0.5 });
+      spawnPlayerBulletAt(0);
+      if (buffs.spread > 0) {
+        spawnPlayerBulletAt(-18);
+        spawnPlayerBulletAt(18);
+      }
+      if (buffs.rapidFire > 0) {
+        spawnBurst(k, player.pos.x, player.pos.y - 26, 3);
+      }
+    }
+
     function spawnEnemyBullet(x: number, y: number, dirX: number, dirY: number) {
+      k.play("enemy_shoot", { volume: 0.5 });
       k.add([
         k.sprite("bullet_enemy"),
         k.pos(x, y),
@@ -262,6 +438,66 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
         k.z(5),
         "enemyBullet",
       ]);
+    }
+
+    function applyItem(kind: ItemKind) {
+      k.play("item_pickup", { volume: 0.7 });
+      if (kind === "heart") {
+        const cfg = ITEM_TYPES.heart;
+        if (lives < PLAYER.maxLives) {
+          lives += 1;
+          renderHearts();
+          spawnPopupText(k, player.pos.x, player.pos.y - 30, "+1 LIFE", cfg.color);
+        } else {
+          score += 50;
+          scoreLabel.text = String(score);
+          spawnPopupText(k, player.pos.x, player.pos.y - 30, "+50", cfg.color);
+        }
+        spawnBurst(k, player.pos.x, player.pos.y, 8);
+        return;
+      }
+
+      const cfg = ITEM_TYPES[kind];
+      buffs[kind] = cfg.duration;
+      const labels: Record<BuffKind, string> = {
+        rapidFire: "연사 UP!",
+        spread: "3-WAY!",
+        shield: "무적!",
+        magnet: "자석!",
+      };
+      spawnPopupText(k, player.pos.x, player.pos.y - 30, labels[kind], cfg.color);
+      spawnRing(k, player.pos.x, player.pos.y, cfg.color, 16, 220);
+    }
+
+    function spawnItemDrop(x: number, y: number) {
+      if (Math.random() >= ITEM_DROP_CHANCE) return;
+      const kind = pickItemKind();
+      const cfg = ITEM_TYPES[kind];
+      k.add([
+        k.sprite(cfg.sprite),
+        k.pos(x, y),
+        k.anchor("center"),
+        k.scale(1.6),
+        k.area(),
+        k.opacity(1),
+        k.z(7),
+        "item",
+        { kind, vy: ITEM_FALL_SPEED },
+      ]).onUpdate(function (this: GameObj) {
+        if (buffs.magnet > 0 && player.exists()) {
+          const dx = player.pos.x - this.pos.x;
+          const dy = player.pos.y - this.pos.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist < ITEM_MAGNET_RADIUS) {
+            this.pos.x += (dx / (dist || 1)) * ITEM_MAGNET_PULL_SPEED * k.dt();
+            this.pos.y += (dy / (dist || 1)) * ITEM_MAGNET_PULL_SPEED * k.dt();
+            if (this.pos.y > GAME_HEIGHT + 40) k.destroy(this);
+            return;
+          }
+        }
+        this.pos.y += this.vy * k.dt();
+        if (this.pos.y > GAME_HEIGHT + 40) k.destroy(this);
+      });
     }
 
     function spawnEnemy() {
@@ -313,9 +549,11 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
       });
 
       enemy.onDeath(() => {
+        k.play("explosion", { volume: 0.6 });
         score += enemy.scoreValue;
         scoreLabel.text = String(score);
         spawnBurst(k, enemy.pos.x, enemy.pos.y, 8);
+        spawnItemDrop(enemy.pos.x, enemy.pos.y);
         k.destroy(enemy);
       });
     }
@@ -323,7 +561,10 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
     k.onCollide("playerBullet", "enemy", (bullet, enemy) => {
       k.destroy(bullet);
       enemy.hurt(1);
-      if (enemy.hp() > 0) spawnBurst(k, enemy.pos.x, enemy.pos.y, 3);
+      if (enemy.hp() > 0) {
+        k.play("hit", { volume: 0.6 });
+        spawnBurst(k, enemy.pos.x, enemy.pos.y, 3);
+      }
     });
 
     k.onCollide("enemyBullet", "player", (bullet) => {
@@ -334,6 +575,11 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
     k.onCollide("enemy", "player", (enemy) => {
       k.destroy(enemy);
       damagePlayer();
+    });
+
+    k.onCollide("item", "player", (item) => {
+      applyItem(item.kind as ItemKind);
+      k.destroy(item);
     });
 
     k.onUpdate(() => {
@@ -361,10 +607,53 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
       }
       clampToStage(player, PLAYER.size);
 
+      // buff timers
+      for (const kind of BUFF_ORDER) {
+        if (buffs[kind] > 0) buffs[kind] = Math.max(0, buffs[kind] - k.dt());
+      }
+      updateBuffUI();
+
+      // shield aura follows player while active
+      if (buffs.shield > 0 && player.exists()) {
+        if (!shieldAura) {
+          shieldAura = k.add([
+            k.circle(24),
+            k.pos(player.pos),
+            k.anchor("center"),
+            k.opacity(0.35),
+            k.color(
+              ITEM_TYPES.shield.color[0],
+              ITEM_TYPES.shield.color[1],
+              ITEM_TYPES.shield.color[2]
+            ),
+            k.outline(2, k.rgb(230, 247, 255)),
+            k.z(9),
+          ]);
+        }
+        shieldAura.pos = player.pos;
+        shieldAura.opacity = 0.25 + Math.sin(k.time() * 6) * 0.15;
+      } else if (shieldAura) {
+        k.destroy(shieldAura);
+        shieldAura = null;
+      }
+
+      // magnet pulse ring, purely visual feedback that the field is active
+      if (buffs.magnet > 0 && player.exists()) {
+        magnetPulseTimer -= k.dt();
+        if (magnetPulseTimer <= 0) {
+          magnetPulseTimer = 0.45;
+          spawnRing(k, player.pos.x, player.pos.y, ITEM_TYPES.magnet.color, 10, 160);
+        }
+      }
+
       // auto fire
       fireTimer -= k.dt();
       if (fireTimer <= 0 && player.exists()) {
-        fireTimer = PLAYER.fireInterval;
+        const interval =
+          buffs.rapidFire > 0
+            ? PLAYER.fireInterval * ITEM_TYPES.rapidFire.fireIntervalMult
+            : PLAYER.fireInterval;
+        fireTimer = interval;
         spawnPlayerBullet();
       }
 
@@ -380,6 +669,12 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
 
   // ---------------- Game over scene ----------------
   k.scene("gameover", (score: number) => {
+    // Play title BGM again on game over
+    if (currentBGM) {
+      currentBGM.stop();
+    }
+    currentBGM = k.play("bgm_title", { loop: true, volume: 0.6 });
+
     addStarfield(k);
     const best = loadBestScore();
 
@@ -415,8 +710,14 @@ export function createGame(canvas: HTMLCanvasElement): () => void {
       prompt.opacity = 0.55 + Math.sin(k.time() * 4) * 0.45;
     });
 
-    k.onMousePress(() => k.go("game"));
-    k.onKeyPress(["space", "enter"], () => k.go("game"));
+    k.onMousePress(() => {
+      k.play("ui_select", { volume: 0.7 });
+      k.go("game");
+    });
+    k.onKeyPress(["space", "enter"], () => {
+      k.play("ui_select", { volume: 0.7 });
+      k.go("game");
+    });
   });
 
   k.go("start");
